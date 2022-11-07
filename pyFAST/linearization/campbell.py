@@ -64,7 +64,7 @@ def postproCampbell(out_or_fstfiles, BladeLen=None, TowerLen=None, verbose=True,
             raise Exception('No linearization file found')
 
     # --- Identify modes
-    modeID_table,modesDesc=mbc.IdentifyModes(CD)
+    modeID_table,modesDesc=mbc.IdentifyModesBeam(CD)
 
     # --- Write files to disk
     # Write csv file for manual identification step..
@@ -78,7 +78,7 @@ def postproCampbell(out_or_fstfiles, BladeLen=None, TowerLen=None, verbose=True,
     # TODO, for now we reread the files...
     OP, Freq, Damp, UnMapped, ModeData = postproMBC(csvModesIDFile=modeID_file, verbose=False, WS_legacy=WS_legacy)
     
-    return OP, Freq, Damp, UnMapped, ModeData, modeID_file
+    return OP, Freq, Damp, UnMapped, ModeData, modeID_file, CD
 
 def run_pyMBC(out_or_fstfiles, verbose=True, removeTwrAzimuth=False):
     """

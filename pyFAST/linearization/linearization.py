@@ -274,7 +274,7 @@ def writeLinearizationFiles(main_fst, workDir, operatingPointsFile,
         nLinTimes = nPerPeriod
         if abs(rpm)<0.001:
             nLinTimes=1
-            ws=1e-4
+            # ws=1e-4
 
         # Determine linearization times based on RPM and nPerPeriod
         Omega = rpm/60*2*np.pi

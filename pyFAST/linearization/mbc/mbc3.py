@@ -120,7 +120,281 @@ def IdentifyModes(CampbellData):
         return False, ''
 
 
-    verbose=False
+    verbose=True
+    Levels=[1,2,3]
+
+
+    # --- Loop on operating points/Runs
+    for i in range(nRuns):
+        Modes  = CampbellData[i]['Modes']
+        nModes = len(Modes)
+        # Array of logical, False for Modes that are not identified
+        modesIdentified = [False] * nModes
+        modesSkipped    = [False] * nModes
+        #verbose=verbose and i==0 # only display for first mode for now..
+        #verbose=i==1
+
+        # --- Give an index to each mode so that we can easily identify them
+        for im, mode in enumerate(Modes):
+            mode['index']=im
+
+        # --- Skip modes based on simple criteria
+        for im, mode in enumerate(Modes):
+            if mode['NaturalFreq_Hz'] < 1e-5 or mode['DampingRatio'] > 0.98: 
+                modesSkipped[im]=True
+
+
+
+        modesDescLocal = modesDesc.copy()
+
+        # --- Level 1 - Find well-defined modes (modes which have only one Max)
+        if 1 in Levels:
+            for im, mode in enumerate(Modes):
+                if modesIdentified[im] or modesSkipped[im]:
+                    continue # skip this mode since it has already been identified
+                stateMax=np.argwhere((mode['StateHasMaxAtThisMode']==1)).flatten()
+                if len(stateMax)==1:
+                    description = mode['DescStates'][stateMax[0]]
+                    if description.startswith('AD'):
+                        # We skipp the pure "AD" modes
+                        modesSkipped[im] = True
+                        continue
+                    found, modeID, patternMatched = doesDescriptionMatch(description, modesDescLocal)
+                    if found and modeID_table[modeID,i]==0:
+                        modesDescLocal[modeID] = [None,]   # we empty this mode patternlist so that it cannot be matched again
+                        modesIdentified[im]    = True
+                        modeID_table[modeID,i] = im+1 # Using Matlab Indexing
+                        if verbose:
+                            print('L1 Mode {} identified using pattern: {}'.format(im+1,patternMatched))
+                            print('     String was: ', description)
+                    #else:
+                    #    print('>>> Cannot identify mode with description {}. Update MBC3 script.'.format(description))
+
+        # --- Level 2 - Find modes with several max - Looping on mode pattern to respect expected frequency order
+        if 2 in Levels:
+            for modeID, modeIDdescList in enumerate(modesDescLocal):
+                modeIDName     = modeIDdescList[0]
+                patternList   = modeIDdescList[1:]
+                # Skip modes already identified above
+                if modeID_table[modeID,i]>0:
+                    continue
+                if verbose:
+                    print('------------------------- LEVEL 2 - LOOKING FOR MODE ',modeIDName)
+
+                found = False;
+                # --- Loop on all non-identified modes in increasing order
+                im = 0;
+                for im, mode in enumerate(Modes):
+                    if modesIdentified[im] or modesSkipped[im]:
+                        continue # move to next mode
+                    # List of component descriptions where this mode has maximum values
+                    stateMax=np.argwhere((mode['StateHasMaxAtThisMode']==1)).flatten()
+                    descriptions     = np.array(mode['DescStates'])[stateMax]
+                    descriptions     = descriptions[:7] # we keep only the first 7 descriptions
+                    descriptionsED   = [d for d in descriptions  if d.startswith('ED')]
+                    descriptionsBD   = [d for d in descriptions  if d.startswith('BD')]
+                    descriptionsAD   = [d for d in descriptions  if d.startswith('AD')]
+                    descriptionsMisc = [d for d in descriptions  if d not in descriptionsED+descriptionsBD+descriptionsAD]
+                    descriptions     = descriptionsED+descriptionsBD+descriptionsMisc # NOTE: we skipp AD descriptions
+                    j = 0;
+                    for description in descriptions:
+                        found, pattern = doesDescriptionMatchPatternList(description, patternList)
+                        if found:
+                            if verbose:
+                                print('L2 Mode {} identified using pattern {}'.format(im+1,pattern))
+                            modeID_table[modeID,i] = im+1 # Using Matlab Indexing
+                            modesDescLocal[modeID] = [None,]   # we empty this mode patternlist so that it cannot be matched again
+                            modesIdentified[im] = True;
+                            break
+                    if found:
+                        break
+            if verbose:
+                print('>> modeIDTable',modeID_table[:,i])
+            # We disqualify modes that had max and that didn't match anything:
+            for im, mode in enumerate(Modes):
+                if modesIdentified[im] or modesSkipped[im]:
+                    continue # move to next mode
+                stateMax=np.argwhere((mode['StateHasMaxAtThisMode']==1)).flatten()
+                if len(stateMax)>=1:
+                    modesSkipped[im]=True
+                    shortdescr = CampbellData[i]['ShortModeDescr'][im]
+                    if verbose:
+                        if shortdescr.find('ED')>=0:
+                            print('>>>> short', CampbellData[i]['ShortModeDescr'][im])
+                            print('>>>> Problem in IdentifyModes. ED DOF found in level 2')
+                    #    import pdb; pdb.set_trace()
+
+        if 3 in Levels:
+            # --- Level 3 - Try our best for modes with no max
+            # Loop on modes to be identified
+            for modeID, modeIDdescList in enumerate(modesDescLocal):
+                modeIDName  = modeIDdescList[0]
+                patternList = modeIDdescList[1:]
+
+                # Skip modes already identified above
+                if modeID_table[modeID,i]>0:
+                    continue
+                if verbose:
+                    print('------------------------- LEVEL 3 - LOOKING FOR MODE ',modeIDName)
+
+                found = False;
+                # --- Loop on all non-identified modes in increasing order
+                im = 0;
+                while not found and im < nModes: # Loop on modes
+                    mode = Modes[im]
+                    if modesIdentified[im] or modesSkipped[im]:
+                        pass
+                    else:
+                        # --- Otherwise, use as mode descriptions the other ones. Seems weird
+                        stateMax=np.argwhere((mode['StateHasMaxAtThisMode']==0)).flatten()
+                        descriptions     = np.array(mode['DescStates'])[stateMax]
+                        ADcounts = np.sum([s.startswith('AD') for s in descriptions[:5]])
+
+                        descriptions2= np.array(mode['DescStates'])[mode['StateHasMaxAtThisMode']]
+                        if len(descriptions2) == 0:
+                            noMax=True
+                            descriptions3 = mode['DescStates'][:5]
+                        else:
+                            noMax=False
+#                         import pdb; pdb.set_trace()
+                        if ADcounts<5:
+                            descriptions=[d for d in descriptions if not d.startswith('AD')]
+#                                 descriptionsED   = [d for d in descriptions  if d.startswith('ED')]
+#                                 descriptionsBD   = [d for d in descriptions  if d.startswith('BD')]
+#                                 descriptionsAD   = [d for d in descriptions  if d.startswith('AD')]
+#                                 descriptionsMisc = [d for d in descriptions  if d not in descriptionsED+descriptionsBD+descriptionsAD]
+#                                 descriptions     = descriptionsED+descriptionsBD+descriptionsMisc # NOTE: we skipp AD descriptions
+                            descriptions     = descriptions[:5] # we keep only the first 7 descriptions
+                            if verbose:
+                                print('>>> Mode',mode['index'], modesIdentified[im], modesSkipped[im])
+                                print('>>>> descr', [replaceModeDescription(s) for s in descriptions])
+                                print('>>>> short', CampbellData[i]['ShortModeDescr'][im])
+                        else:
+                            descriptions=[]
+#                         #descriptions     = descriptions[:7] # we keep only the first 7 descriptions
+
+                        j = 0;
+                        while not found and j < len(descriptions):
+                            j = j + 1;
+                            if not found:
+                                for targetDesc in patternList:
+                                    # Looking for targetDesc into list of descriptions
+                                    if re.search(targetDesc ,descriptions[j-1],re.IGNORECASE)!=None:
+                                        modeID_table[modeID,i] = im+1 # Using Matlab Indexing
+                                        if verbose:
+                                            print('L3 Mode {} identified as {}'.format(im+1,targetDesc))
+                                            print('     String was: ', descriptions[j-1])
+                                        modesIdentified[im] = True;
+                                        found = True;
+                                        break;
+                    im=im+1; # increment counter
+            if verbose:
+                print('>> modeIDTable',modeID_table[:,i])
+
+        if verbose:
+            print('---------- Summary')
+            for j in np.arange(len(modeID_table)):
+                print('{:32s}  {:d}'.format(modesDesc[j][0],modeID_table[j,i]))
+            print('---------- ')
+
+
+    return modeID_table,modesDesc
+
+def IdentifyModesBeam(CampbellData):
+    """ 
+    Attempts to perform an identification of the modes on a simplified BeamDyn Beam.
+    For now, the method is based on the energy content of the modes, and the state descriptions where the energy is maximum
+
+    Original contribution by: Srinivasa B. Ramisett, ramisettisrinivas@yahoo.com, http://ramisetti.github.io
+    """
+    #import pdb; pdb.set_trace()
+    #import pickle
+    #pickle.dump(CampbellData, open('C:/Work/_libs/python-toolbox/data/_CampbellData_UA4_DB2.pkl','wb'))
+
+
+    # --- Looking at states descriptions (of first run, first mode), to see if we are offshore. 
+    # NOTE: DescStates is likely the same for all modes
+    DescStates  = CampbellData[0]['Modes'][0]['DescStates']
+    hasHeave    = any(['heave' in s.lower() for s in DescStates])
+    hasSurge    = any(['surge' in s.lower() for s in DescStates])
+    hasSway     = any(['sway' in s.lower() for s in DescStates])
+    hasYaw      = any(['platform yaw' in s.lower() for s in DescStates])
+    hasRoll     = any(['platform roll tilt' in s.lower() for s in DescStates])
+    hasPitch    = any(['platform pitch tilt' in s.lower() for s in DescStates])
+    hasEdge1Col = any(['1st edgewise bending-mode dof of blade collective' in s.lower() for s in DescStates])
+
+    # --- Setting up a list of modes with 
+    modesDesc = []
+    # modesDesc.append( ['Generator DOF (not shown)'     , 'ED Variable speed generator DOF, rad'] )
+    # Platform DOFs
+    # if hasSurge:
+    #     modesDesc.append( ['Platform surge', 'ED Platform horizontal surge translation DOF, m'] )
+    # if hasSway:
+    #     modesDesc.append( ['Platform sway', 'ED Platform horizontal sway translation DOF, m'] )
+    # if hasHeave:
+    #     modesDesc.append( ['Platform heave', 'ED Platform vertical heave translation DOF, m'] )
+    # if hasRoll:
+    #     modesDesc.append( ['Platform roll', 'ED Platform roll tilt rotation DOF, rad'] )
+    # if hasPitch:
+    #     modesDesc.append( ['Platform pitch', 'ED Platform pitch tilt rotation DOF, rad'] )
+    # if hasYaw:
+    #     modesDesc.append( ['Platform yaw', 'ED Platform yaw rotation DOF, rad'] )
+
+    # modesDesc.append( ['1st Tower FA'                  , 'ED 1st tower fore-aft bending mode DOF, m'] )
+    # modesDesc.append( ['1st Tower SS'                  , 'ED 1st tower side-to-side bending mode DOF, m'] )
+    modesDesc.append( ['1st Blade Flap'   , r'Blade collective finite element node \d rotational displacement in Y, rad'] )
+    modesDesc.append( ['2nd Blade Flap'   , r'Blade collective finite element node \d rotational displacement in Y, rad'] )
+    modesDesc.append( ['3rd Blade Flap'  ,  r'Blade collective finite element node \d rotational displacement in Y, rad'] )      # , ... # 'Blade (sine|cosine) finite element node \d rotational displacement in Y, rad']
+    modesDesc.append( ['4th Blade Flap'   , r'Blade collective finite element node \d rotational displacement in Y, rad'] )
+    
+    modesDesc.append( ['1st Blade Edge'   , r'Blade collective finite element node \d rotational displacement in X, rad'] )
+    modesDesc.append( ['2nd Blade Edge'   , r'Blade collective finite element node \d rotational displacement in X, rad'] )
+    modesDesc.append( ['3rd Blade Edge'  ,  r'Blade collective finite element node \d rotational displacement in X, rad'] )      # , ... # 'Blade (sine|cosine) finite element node \d rotational displacement in Y, rad']
+    modesDesc.append( ['4th Blade Edge'   , r'Blade collective finite element node \d rotational displacement in X, rad'] )    
+    
+    modesDesc.append( ['1st Blade Torsion'   , r'Blade collective finite element node \d rotational displacement in Z, rad'] )
+    modesDesc.append( ['2nd Blade Torsion'   , r'Blade collective finite element node \d rotational displacement in Z, rad'] )
+    modesDesc.append( ['3rd Blade Torsion'  ,  r'Blade collective finite element node \d rotational displacement in Z, rad'] )      # , ... # 'Blade (sine|cosine) finite element node \d rotational displacement in Y, rad']
+    modesDesc.append( ['4th Blade Torsion'   , r'Blade collective finite element node \d rotational displacement in Z, rad'] )   
+    
+    # if hasEdge1Col:
+    #     modesDesc.append(['1st Blade Edge (Collective)', 'ED 1st edgewise bending-mode DOF of blade collective, m']                                                                          )      # , ... # 'Blade (sine|cosine) finite element node \d rotational displacement in Y, rad']
+    # modesDesc.append( ['1st Blade Edge (Progressive)'  , 'ED 1st edgewise bending-mode DOF of blade (sine|cosine), m'] )
+    # modesDesc.append( ['1st Drivetrain Torsion'        , 'ED Drivetrain rotational-flexibility DOF, rad'] )
+    # modesDesc.append( ['2nd Tower FA'                  , 'ED 2nd tower fore-aft bending mode DOF, m'] )
+    # modesDesc.append( ['2nd Tower SS'                  , 'ED 2nd tower side-to-side bending mode DOF, m'] )
+    # modesDesc.append( ['2nd Blade Flap (Regressive)'   , 'ED 2nd flapwise bending-mode DOF of blade (sine|cosine), m'] )
+    # modesDesc.append( ['2nd Blade Flap (Collective)'   , 'ED 2nd flapwise bending-mode DOF of blade collective, m', r'Blade collective finite element node \d rotational displacement in Y, rad'] )
+    # modesDesc.append( ['2nd Blade Flap (Progressive)'  , 'ED 2nd flapwise bending-mode DOF of blade (sine|cosine), m'] )
+    # modesDesc.append( ['Nacelle Yaw (not shown)'  , 'ED Nacelle yaw DOF, rad'] )
+
+
+    nModes = int(len(modesDesc))
+    nRuns = int(len(CampbellData))
+    modeID_table=np.zeros((nModes,nRuns)).astype(int)
+
+
+
+    def doesDescriptionMatch(description, listOfModePatterns):
+        """ loop through all mode desrption  """
+        for iModePattern, modeIDdescList in enumerate(listOfModePatterns):
+            modeIDName     = modeIDdescList[0]
+            patternList    = modeIDdescList[1:] # list of patterns for a given mode
+            found, pattern = doesDescriptionMatchPatternList(description, patternList)
+            if found:
+                return True, iModePattern, pattern
+        return False, -1, ''
+
+    def doesDescriptionMatchPatternList(description, patternList):
+        """ loop through all patterns to find a match  """
+        for pattern in patternList:
+            # Looking for targetDesc into description
+            if re.search(pattern ,description, re.IGNORECASE)!=None:
+                return True, pattern
+        return False, ''
+
+
+    verbose=True
     Levels=[1,2,3]
 
 
